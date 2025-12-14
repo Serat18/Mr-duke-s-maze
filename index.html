@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Mr Duke's maze</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            background: transparent; border: 2px solid rgba(255, 255, 255, 0.8);
+            border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 2;
+        }
+        #ui {
+            position: absolute; top: 10px; left: 10px; color: yellow; font-size: 24px; font-weight: bold;
+            text-shadow: 2px 2px 0 #000; z-index: 2; pointer-events: none;
+        }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); color: white; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 10;
+        }
+        button {
+            padding: 15px 30px; font-size: 24px; cursor: pointer; background: #c00; color: white;
+            border: none; border-radius: 5px; margin-top: 20px; font-family: inherit;
+        }
+        button:hover { background: #f00; }
+        #stamina-container {
+            position: absolute; bottom: 20px; left: 20px; width: 300px; height: 25px;
+            background: #333; border: 2px solid white; border-radius: 4px; z-index: 2;
+        }
+        #stamina-bar { width: 100%; height: 100%; background: lime; transition: width 0.1s; }
+        .hidden { display: none !important; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+<div id="crosshair"></div>
+<div id="ui">COINS: <span id="score">0</span> / 5</div>
+<div id="stamina-container"><div id="stamina-bar"></div></div>
+
+<div id="overlay">
+    <h1 style="font-size: 60px; color: red; margin:0;">MR. DUKE'S MAZE</h1>
+    <p>Find 5 Floating Coins. Avoid Mr. Duke.</p>
+    <p><strong>MOUSE</strong> to Look | <strong>WASD</strong> to Move | <strong>SHIFT</strong> to Run</p>
+    <button id="startBtn">CLICK TO START</button>
+</div>
+
+<script>
+    // --- GAME CONFIG ---
+    const WALL_HEIGHT = 15;
+    const SPEED = 25.0;
+    const RUN_SPEED = 50.0;
+    const DUKE_SPEED = 18.0; 
+    
+    // --- STATE ---
+    let camera, scene, renderer;
+    let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, canJump = false;
+    let run = false;
+    let prevTime = performance.now();
+    let velocity = new THREE.Vector3();
+    let direction = new THREE.Vector3();
+    let score = 0;
+    let stamina = 100;
+    let isGameOver = false;
+    let isPaused = true;
+
+    // Objects
+    const walls = []; 
+    const coins = [];
+    let duke; // The Enemy
+
+    // Map: 1=Wall, 0=Empty
+    // 20x20 Grid
+    const mapData = [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,1],
+        [1,0,1,1,1,0,1,0,1,1,1,0,1,0,1,1,1,1,0,1],
+        [1,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,1],
+        [1,0,1,0,1,1,1,1,1,0,1,1,1,1,1,1,0,1,0,1],
+        [1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1],
+        [1,1,1,0,1,0,1,1,1,1,1,1,1,1,0,1,1,1,0,1],
+        [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1],
+        [1,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1,0,1,0,1],
+        [1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,0,1,0,1,0,1,1,1,0,1,1,1,1,1,1],
+        [1,0,0,0,1,0,1,0,0,0,1,0,0,0,0,0,0,0,0,1],
+        [1,1,1,0,1,0,1,1,1,1,1,0,1,1,1,1,1,1,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,0,1,1],
+        [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1,0,0,1],
+        [1,1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1,1,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ];
+
+    init();
+    animate();
+
+    function init() {
+        // Scene Setup
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        scene.fog = new THREE.Fog(0x111111, 0, 80);
+
+        // Camera
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+        
+        // Lighting
+        const light = new THREE.HemisphereLight(0xeeeeff, 0x777788, 0.75);
+        light.position.set(0.5, 1, 0.75);
+        scene.add(light);
+        const pointLight = new THREE.PointLight(0xffaa00, 1, 50);
+        camera.add(pointLight); // Flashlight effect
+        scene.add(camera);
+
+        // Map Generation
+        const wallGeo = new THREE.BoxGeometry(10, WALL_HEIGHT, 10);
+        
+        // Procedural Textures (Canvas)
+        const wallTex = createTexture('#4466aa', 'brick');
+        const floorTex = createTexture('#332211', 'wood');
+        
+        const wallMat = new THREE.MeshLambertMaterial({ map: wallTex });
+        const floorGeo = new THREE.PlaneGeometry(2000, 2000);
+        const floorMat = new THREE.MeshLambertMaterial({ map: floorTex });
+        
+        // Floor
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = - Math.PI / 2;
+        scene.add(floor);
+
+        // Build Walls
+        for(let z=0; z<mapData.length; z++) {
+            for(let x=0; x<mapData[z].length; x++) {
+                if(mapData[z][x] === 1) {
+                    const wall = new THREE.Mesh(wallGeo, wallMat);
+                    wall.position.set(x * 10, WALL_HEIGHT/2, z * 10);
+                    scene.add(wall);
+                    walls.push(wall); // Store for collision
+                } else if (Math.random() < 0.05 && coins.length < 5) {
+                    // Spawn Coin randomly in empty space
+                    createCoin(x * 10, z * 10);
+                }
+            }
+        }
+        
+        // Ensure we have 5 coins if random gen failed
+        while(coins.length < 5) {
+             createCoin(50, 50); // Fallback position
+        }
+
+        // Create Mr. Duke
+        createDuke();
+
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Controls
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+        window.addEventListener('resize', onWindowResize);
+        
+        // Pointer Lock
+        const overlay = document.getElementById('overlay');
+        const startBtn = document.getElementById('startBtn');
+        
+        startBtn.addEventListener('click', () => {
+            document.body.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === document.body) {
+                isPaused = false;
+                overlay.classList.add('hidden');
+            } else {
+                isPaused = true;
+                if(!isGameOver) overlay.classList.remove('hidden');
+            }
+        });
+        
+        document.body.addEventListener('mousemove', (event) => {
+            if (isPaused) return;
+            // Modern FPS Mouse Look
+            const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+            euler.setFromQuaternion(camera.quaternion);
+            euler.y -= event.movementX * 0.002;
+            euler.x -= event.movementY * 0.002;
+            euler.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, euler.x));
+            camera.quaternion.setFromEuler(euler);
+        });
+        
+        // Initial Player Pos
+        camera.position.set(30, 5, 30);
+    }
+
+    function createTexture(color, type) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64; canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = color;
+        ctx.fillRect(0,0,64,64);
+        
+        // Simple details
+        ctx.fillStyle = "rgba(0,0,0,0.2)";
+        if(type === 'brick') {
+            ctx.fillRect(0, 30, 64, 2);
+            ctx.fillRect(30, 0, 2, 30);
+            ctx.fillRect(10, 32, 2, 32);
+        } else {
+            // Wood grain
+            for(let i=0; i<5; i++) ctx.fillRect(0, i*12, 64, 2);
+        }
+        
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.magFilter = THREE.NearestFilter; // Retro look
+        return tex;
+    }
+
+    function createCoin(x, z) {
+        const geo = new THREE.BoxGeometry(2, 2, 2);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+        const coin = new THREE.Mesh(geo, mat);
+        coin.position.set(x, 5, z);
+        scene.add(coin);
+        coins.push(coin);
+    }
+
+    function createDuke() {
+        const geo = new THREE.CylinderGeometry(2, 2, 8, 16);
+        const mat = new THREE.MeshLambertMaterial({ color: 0xff0000 });
+        duke = new THREE.Mesh(geo, mat);
+        
+        // Face
+        const faceGeo = new THREE.PlaneGeometry(3, 3);
+        const faceCanvas = document.createElement('canvas');
+        faceCanvas.width = 64; faceCanvas.height = 64;
+        const fctx = faceCanvas.getContext('2d');
+        fctx.fillStyle = "red"; fctx.fillRect(0,0,64,64);
+        fctx.fillStyle = "black"; 
+        fctx.fillRect(10, 15, 15, 15); // Eye L
+        fctx.fillRect(40, 15, 15, 15); // Eye R
+        fctx.fillRect(15, 45, 35, 5); // Mouth
+        const faceTex = new THREE.CanvasTexture(faceCanvas);
+        const faceMat = new THREE.MeshBasicMaterial({ map: faceTex, transparent:true });
+        const face = new THREE.Mesh(faceGeo, faceMat);
+        face.position.z = 2.1;
+        face.position.y = 1;
+        duke.add(face);
+        
+        duke.position.set(150, 4, 150); // Far away start
+        scene.add(duke);
+    }
+
+    function onKeyDown(event) {
+        switch (event.code) {
+            case 'ArrowUp': case 'KeyW': moveForward = true; break;
+            case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+            case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+            case 'ArrowRight': case 'KeyD': moveRight = true; break;
+            case 'ShiftLeft': case 'ShiftRight': run = true; break;
+        }
+    }
+
+    function onKeyUp(event) {
+        switch (event.code) {
+            case 'ArrowUp': case 'KeyW': moveForward = false; break;
+            case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+            case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+            case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            case 'ShiftLeft': case 'ShiftRight': run = false; break;
+        }
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function checkCollision(newPos) {
+        // Simple Grid Collision
+        const gridX = Math.round(newPos.x / 10);
+        const gridZ = Math.round(newPos.z / 10);
+        
+        if (gridX >= 0 && gridX < mapData[0].length && gridZ >= 0 && gridZ < mapData.length) {
+            if (mapData[gridZ][gridX] === 1) return true;
+        }
+        return false;
+    }
+
+    function gameOver(won) {
+        isGameOver = true;
+        isPaused = true;
+        document.exitPointerLock();
+        const overlay = document.getElementById('overlay');
+        const h1 = overlay.querySelector('h1');
+        const p = overlay.querySelector('p');
+        overlay.classList.remove('hidden');
+        
+        if(won) {
+            h1.innerText = "YOU ESCAPED!";
+            h1.style.color = "lime";
+            p.innerText = "Great job! Refresh to play again.";
+        } else {
+            h1.innerText = "CAUGHT!";
+            h1.style.color = "red";
+            p.innerText = "Mr. Duke found you. Refresh to try again.";
+        }
+        document.getElementById('startBtn').style.display = 'none';
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        if (isPaused || isGameOver) return;
+
+        const time = performance.now();
+        const delta = (time - prevTime) / 1000;
+
+        // Stamina Logic
+        if (run && stamina > 0) stamina -= 20 * delta;
+        else if (stamina < 100) stamina += 10 * delta;
+        document.getElementById('stamina-bar').style.width = stamina + "%";
+        
+        const currentSpeed = (run && stamina > 0) ? RUN_SPEED : SPEED;
+
+        // Friction
+        velocity.x -= velocity.x * 10.0 * delta;
+        velocity.z -= velocity.z * 10.0 * delta;
+
+        // Input
+        direction.z = Number(moveForward) - Number(moveBackward);
+        direction.x = Number(moveRight) - Number(moveLeft);
+        direction.normalize(); // consistent speed in all directions
+
+        if (moveForward || moveBackward) velocity.z -= direction.z * currentSpeed * 10.0 * delta; // Note: THREE JS defaults forward as -Z usually, but we adjust
+        if (moveLeft || moveRight) velocity.x -= direction.x * currentSpeed * 10.0 * delta;
+
+        // Move Camera (Player)
+        // Calculate Forward Vector
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        forward.y = 0; forward.normalize();
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        right.y = 0; right.normalize();
+
+        const moveVec = new THREE.Vector3();
+        if(moveForward) moveVec.add(forward);
+        if(moveBackward) moveVec.sub(forward);
+        if(moveRight) moveVec.add(right);
+        if(moveLeft) moveVec.sub(right);
+        moveVec.normalize().multiplyScalar(currentSpeed * delta);
+
+        const nextPos = camera.position.clone().add(moveVec);
+        
+        // Wall Collision Check (Simple box check)
+        if (!checkCollision(new THREE.Vector3(nextPos.x, nextPos.y, camera.position.z))) {
+            camera.position.x = nextPos.x;
+        }
+        if (!checkCollision(new THREE.Vector3(camera.position.x, nextPos.y, nextPos.z))) {
+            camera.position.z = nextPos.z;
+        }
+
+        // --- DUKE AI ---
+        duke.lookAt(camera.position);
+        const dukeDir = new THREE.Vector3().subVectors(camera.position, duke.position).normalize();
+        const dukeNextPos = duke.position.clone().add(dukeDir.multiplyScalar(DUKE_SPEED * delta));
+        
+        // Duke collision (very basic, he ghosts through walls slightly to avoid getting stuck)
+        duke.position.copy(dukeNextPos);
+        
+        // Check Caught
+        if (camera.position.distanceTo(duke.position) < 5) {
+            gameOver(false);
+        }
+
+        // --- COIN LOGIC ---
+        for(let i=0; i<coins.length; i++) {
+            coins[i].rotation.y += 2 * delta;
+            coins[i].position.y = 5 + Math.sin(time * 0.005) * 1; // Float
+            
+            if (camera.position.distanceTo(coins[i].position) < 5) {
+                scene.remove(coins[i]);
+                coins.splice(i, 1);
+                score++;
+                document.getElementById('score').innerText = score;
+                if(score >= 5) gameOver(true);
+            }
+        }
+
+        prevTime = time;
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
